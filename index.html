@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Blindly — Multijoueur</title>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<style>
+*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 50% -10%,#29204d,#0b0b11 55%);color:#fff;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{max-width:850px;margin:auto;padding:18px 15px 50px}.logo{text-align:center;font-size:28px;font-weight:950;margin:10px 0 25px}.card{background:#12121bee;border:1px solid #30303c;border-radius:25px;padding:24px;box-shadow:0 22px 80px #0009}
+h1{font-size:clamp(40px,10vw,70px);line-height:.92;letter-spacing:-2px;margin:0 0 16px}h2{margin-top:0}.muted{color:#aaaaba}
+input{width:100%;padding:16px;border-radius:14px;border:1px solid #3a3a47;background:#0b0b10;color:#fff;font-size:17px;margin:7px 0}
+button{width:100%;padding:16px;border:0;border-radius:15px;background:#fff;color:#08080c;font-size:17px;font-weight:850;cursor:pointer;margin-top:9px}button.alt{background:#24242f;color:#fff}button:disabled{opacity:.45}
+.hidden{display:none!important}.center{text-align:center}.code{font-size:54px;font-weight:950;letter-spacing:9px;margin:12px}.tag{display:inline-block;background:#24242e;color:#bbb;padding:7px 11px;border-radius:99px}
+.qr{width:190px;height:190px;margin:16px auto;background:#fff;color:#111;border-radius:16px;display:flex;align-items:center;justify-content:center;text-align:center;padding:18px;font-weight:900}
+.players{display:grid;gap:9px;margin:18px 0}.player,.rank{display:flex;justify-content:space-between;align-items:center;background:#1b1b25;padding:14px;border-radius:13px}
+.timer{text-align:center;font-size:52px;font-weight:950}.question{text-align:center;font-size:27px;font-weight:900}.answers{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:22px}.answers button{min-height:88px;background:#22222d;color:#fff;text-align:left;margin:0}
+.notice{text-align:center;padding:12px;border-radius:12px;background:#1b1b25;margin:12px 0}.bar{height:7px;background:#292933;border-radius:99px;overflow:hidden;margin:15px 0}.bar i{display:block;height:100%;background:#fff;width:0;transition:width .2s linear}
+@media(max-width:600px){.answers{grid-template-columns:1fr}.card{padding:20px}.code{font-size:45px}}
+</style></head>
+<body><main>
+<div class="logo">🎧 BLINDLY</div>
+
+<section id="home" class="card">
+<h1>Le blind test<br>à plusieurs.</h1>
+<p class="muted">Un iPad maître, les téléphones des joueurs. Aucun serveur à installer.</p>
+<input id="hostName" maxlength="18" placeholder="Ton pseudo">
+<button onclick="createRoom()">Créer une partie</button>
+<button class="alt" onclick="show('join')">Rejoindre une partie</button>
+</section>
+
+<section id="join" class="card hidden">
+<h2>Rejoindre</h2>
+<input id="playerName" maxlength="18" placeholder="Ton pseudo">
+<input id="roomCode" maxlength="20" placeholder="Code de partie">
+<button onclick="joinRoom()">Rejoindre</button><button class="alt" onclick="show('home')">Retour</button>
+</section>
+
+<section id="lobby" class="card hidden">
+<div class="center"><span class="tag">CODE DE PARTIE</span><div id="code" class="code">------</div>
+<div id="qr" class="qr"></div>
+<p class="muted">Scanne le QR ou entre le code sur les autres appareils.</p></div>
+<h2>Joueurs</h2><div id="players" class="players"></div>
+<button id="startBtn" onclick="startGame()">Lancer la partie</button>
+</section>
+
+<section id="game" class="card hidden">
+<div class="timer" id="timer">15</div><div class="bar"><i id="progress"></i></div>
+<div class="question" id="question">Question</div><p class="muted center" id="state">Choisis une réponse.</p>
+<div id="answers" class="answers"></div><div id="liveScores" class="players"></div>
+</section>
+
+<section id="results" class="card hidden">
+<h1>🏆 Fin de partie</h1><div id="ranking"></div><button onclick="location.href=location.pathname">Nouvelle partie</button>
+</section>
+</main>
+
+<script>
+const SONGS=[
+["Neon Nights","The Midnight Owls"],["Summer Drive","Luna Arcade"],["Golden Hour","Milo West"],["Electric Love","Nova City"],["After Midnight","Velvet Radio"],
+["Ocean Lights","Palm Avenue"],["Runaway","Echo District"],["Digital Heart","Pixel Saints"],["Wildfire","Ruby Lane"],["Last Call","Night Signals"]];
+let peer=null,hostConn=null,isHost=false,myId="",me="",room="",connections=[],players={},q=0,current=null,timer=null;
+const $=id=>document.getElementById(id);
+function show(id){["home","join","lobby","game","results"].forEach(x=>$(x).classList.toggle("hidden",x!==id))}
+function setState(s){$("state").textContent=s}
+function makePeer(){return new Peer({debug:0})}
+function createRoom(){
+ me=$("hostName").value.trim()||"Host";isHost=true;
+ room=Math.random().toString(36).slice(2,8).toUpperCase();
+ peer=new Peer(room);
+ peer.on("open",id=>{
+   myId=id; room=id.toUpperCase();
+   players[id]={id,name:me,score:0,host:true};
+   $("code").textContent=room; makeQR(); show("lobby"); renderPlayers();
+ });
+ peer.on("connection",conn=>setupHostConn(conn));
+ peer.on("error",e=>{
+   if(e.type==="unavailable-id"){alert("Ce code est déjà utilisé. Relance la création de partie.");}
+   else alert("Connexion impossible : "+e.type);
+ });
+}
+function setupHostConn(conn){
+ connections.push(conn);
+ conn.on("open",()=>conn.send({type:"welcome",hostId:myId,room}));
+ conn.on("data",m=>{if(m.type==="join"){players[conn.peer]={id:conn.peer,name:m.name||"Joueur",score:0};renderPlayers();broadcast({type:"lobby",players:publicPlayers()})}
+ if(m.type==="answer"&&current&&!players[conn.peer].answered){players[conn.peer].answered=true;if(m.choice===current.correct)players[conn.peer].score+=100;broadcast({type:"scores",players:publicPlayers()});checkAnswers()}});
+ conn.on("close",()=>{delete players[conn.peer];connections=connections.filter(c=>c!==conn);renderPlayers();broadcast({type:"lobby",players:publicPlayers()})});
+}
+function publicPlayers(){return Object.values(players).map(p=>({id:p.id,name:p.name,score:p.score,answered:!!p.answered}))}
+function broadcast(m){connections.forEach(c=>{if(c.open)c.send(m)})}
+function renderPlayers(){let arr=Object.values(players);$("players").innerHTML=arr.map(p=>`<div class="player"><span>👤 ${esc(p.name)} ${p.host?"⭐":""}</span><b>${p.score}</b></div>`).join("")}
+function makeQR(){
+ const url=location.href.split("?")[0]+"?join="+encodeURIComponent(room);
+ $("qr").innerHTML="";
+ new QRCode($("qr"),{text:url,width:154,height:154,correctLevel:QRCode.CorrectLevel.M});
+}
+function startGame(){if(!isHost)return;if(Object.keys(players).length<1)return;q=0;nextQuestion()}
+function nextQuestion(){
+ if(q>=SONGS.length){finish();return}q++;
+ Object.values(players).forEach(p=>p.answered=false);
+ let correct=Math.floor(Math.random()*4),base=SONGS[Math.floor(Math.random()*SONGS.length)],choices=[base];
+ while(choices.length<4){let s=SONGS[Math.floor(Math.random()*SONGS.length)];if(!choices.some(x=>x[0]===s[0]))choices.push(s)}
+ choices.sort(()=>Math.random()-.5);current={choices,correct:choices.indexOf(base)};
+ const msg={type:"question",number:q,choices:choices,seconds:15};broadcast(msg);renderQuestion(msg);
+ clearInterval(timer);let left=15;timer=setInterval(()=>{left--;updateTimer(left);if(left<=0){clearInterval(timer);advance()}},1000)
+}
+function checkAnswers(){if(Object.values(players).every(p=>p.answered))advance()}
+function advance(){clearInterval(timer);broadcast({type:"roundEnd",players:publicPlayers()});setTimeout(nextQuestion,900)}
+function renderQuestion(m){
+ show("game");$("question").textContent=`Question ${m.number} — Quel est ce morceau ?`;setState("Choisis une réponse !");
+$("answers").innerHTML="";m.choices.forEach((s,i)=>{let b=document.createElement("button");b.textContent=s[0]+" — "+s[1];b.onclick=()=>{if(isHost){players[myId].answered=true;if(i===current.correct)players[myId].score+=100;renderScores();b.disabled=true;setState(i===current.correct?"✅ +100":"❌ Raté");checkAnswers()}else{hostConn.send({type:"answer",choice:i});[...$("answers").children].forEach(x=>x.disabled=true);setState("Réponse envoyée ✓")}};$("answers").appendChild(b)});
+renderScores();updateTimer(15)
+}
+function updateTimer(x){$("timer").textContent=x;$("progress").style.width=((15-x)/15*100)+"%"}
+function renderScores(){let arr=publicPlayers().sort((a,b)=>b.score-a.score);$("liveScores").innerHTML=arr.map(p=>`<div class="player"><span>${esc(p.name)}</span><b>${p.score}</b></div>`).join("")}
+function connectToHost(id){
+ me=$("playerName").value.trim()||"Joueur";
+ id=String(id||"").trim().toUpperCase();
+ if(!id)return alert("Code de partie manquant.");
+ peer=makePeer();
+ peer.on("open",()=>{
+   hostConn=peer.connect(id,{reliable:true});
+   hostConn.on("open",()=>hostConn.send({type:"join",name:me}));
+   hostConn.on("data",handlePlayerMessage);
+   hostConn.on("error",()=>alert("Connexion impossible. Vérifie le code."));
+   hostConn.on("close",()=>alert("La connexion avec le maître du jeu a été fermée."));
+ });
+ peer.on("error",e=>alert("Impossible de rejoindre la partie : "+e.type));
+}
+function handlePlayerMessage(m){
+ if(m.type==="welcome"){room=m.room;show("lobby");$("code").textContent=room}
+ if(m.type==="lobby"){players={};m.players.forEach(p=>players[p.id]=p);renderPlayers()}
+ if(m.type==="question")renderQuestion(m)
+ if(m.type==="scores"){players={};m.players.forEach(p=>players[p.id]=p);renderScores()}
+ if(m.type==="roundEnd"){players={};m.players.forEach(p=>players[p.id]=p);renderScores()}
+ if(m.type==="ranking")renderRanking(m.players)
+}
+function renderRanking(arr){$("ranking").innerHTML=arr.sort((a,b)=>b.score-a.score).map((p,i)=>`<div class="rank"><b>${i+1}. ${esc(p.name)}</b><strong>${p.score} pts</strong></div>`).join("");show("results")}
+function finish(){clearInterval(timer);let arr=publicPlayers().sort((a,b)=>b.score-a.score);broadcast({type:"ranking",players:arr});renderRanking(arr)}
+function joinRoom(){
+ let code=$("roomCode").value.trim();if(!code)return alert("Entre un code.");
+ alert("Pour rejoindre simplement, utilise le lien/QR affiché par le maître du jeu. Un code court seul ne permet pas de retrouver un pair sans annuaire.");
+}
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+const params=new URLSearchParams(location.search);
+if(params.get("join")&&params.get("host")){
+ show("join");$("roomCode").value=params.get("join");
+ $("roomCode").style.display="none";
+ const b=document.querySelector("#join button"); b.textContent="Rejoindre via le lien";
+ const old=window.joinRoom; window.joinRoom=()=>connectToHost(params.get("host"));
+}
+</script></body></html>
